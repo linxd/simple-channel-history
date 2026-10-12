@@ -57,8 +57,8 @@ export function formatRevisionTime(ms) {
     const seconds = Math.floor(elapsed / 1000);
     const minutes = Math.floor(seconds / 60);
     if (minutes >= 60) return formatDateTime(t);
-    if (minutes > 0) return `${minutes} minutes ago`;
-    return `${seconds} seconds ago`;
+    if (minutes > 0) return `${minutes} 分钟前`;
+    return `${seconds} 秒前`;
 }
 
 /* ---- change types + colors (ComponentTreePanel) ---------------------------- */
@@ -72,7 +72,7 @@ export const CHANGE_COLOR = {
     RIGHT_ONLY: 'rgb(50,140,50)',
     UNCHANGED: 'gray'
 };
-export const CHANGE_LABEL = { LEFT_ONLY: ' (removed)', RIGHT_ONLY: ' (added)', MODIFIED: ' (changed)', UNCHANGED: '' };
+export const CHANGE_LABEL = { LEFT_ONLY: '（已移除）', RIGHT_ONLY: '（已添加）', MODIFIED: '（已更改）', UNCHANGED: '' };
 
 /* ---- channel XML decomposition (ChannelXmlDecomposer, 1:1) ----------------- */
 

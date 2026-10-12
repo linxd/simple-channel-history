@@ -130,7 +130,7 @@ export function openDiff(platform, { title, oldLabel, newLabel, oldXml, newXml, 
 
         // Left: summary + tree + checkboxes. Right: the component diff.
         const summary = h('div', { style: 'padding:2px 8px 6px; font-size:12px; color:var(--text-dim)' },
-            `${changed} of ${total} components changed`);
+            `${total} 个组件中 ${changed} 个已更改`);
         const treeHost = h('div', { style: 'flex:1; min-height:0; display:flex; flex-direction:column' });
 
         let showChangedOnly = false;
@@ -161,9 +161,9 @@ export function openDiff(platform, { title, oldLabel, newLabel, oldXml, newXml, 
         };
 
         const changedOnlyCb = h('label', { style: 'display:inline-flex; align-items:center; gap:5px; font-size:12px; cursor:pointer' },
-            h('input', { type: 'checkbox', onChange: (e) => { showChangedOnly = e.target.checked; rebuild(); } }), 'Show Changed Only');
+            h('input', { type: 'checkbox', onChange: (e) => { showChangedOnly = e.target.checked; rebuild(); } }), '仅显示更改');
         const labelsCb = h('label', { style: 'display:inline-flex; align-items:center; gap:5px; font-size:12px; cursor:pointer' },
-            h('input', { type: 'checkbox', checked: true, onChange: (e) => { showLabels = e.target.checked; rebuild(); } }), 'Show Labels');
+            h('input', { type: 'checkbox', checked: true, onChange: (e) => { showLabels = e.target.checked; rebuild(); } }), '显示标签');
         const checks = h('div', { style: 'display:flex; gap:14px; padding:6px 8px; border-top:1px solid var(--line)' }, changedOnlyCb, labelsCb);
 
         const leftPane = h('div', { style: 'width:280px; flex:none; display:flex; flex-direction:column; min-height:0; border:1px solid var(--line); border-radius:6px; overflow:hidden' },
@@ -181,13 +181,13 @@ export function openDiff(platform, { title, oldLabel, newLabel, oldXml, newXml, 
 
     // Raw ⇄ Component toggle in the TOP bar (Swing's NORTH button), only when a
     // decomposed view exists.
-    const buttons = [{ label: 'Close', onClick: () => true }];
+    const buttons = [{ label: '关闭', onClick: () => true }];
     let showingRaw = false;
     const rawContainer = h('div', { style: 'flex:1; min-height:0; display:none; flex-direction:column' });
     let toggleBtn = null;
     if (model) {
         contentArea.appendChild(rawContainer);
-        toggleBtn = h('button.btn', { onClick: () => toggleRaw() }, 'Show Raw XML');
+        toggleBtn = h('button.btn', { onClick: () => toggleRaw() }, '显示原始 XML');
         topBar.appendChild(toggleBtn);
     }
 
@@ -203,12 +203,12 @@ export function openDiff(platform, { title, oldLabel, newLabel, oldXml, newXml, 
             }
             if (decomposedSplitEl) decomposedSplitEl.style.display = 'none';
             rawContainer.style.display = 'flex';
-            relabelToggle('Show Component View');
+            relabelToggle('显示组件视图');
             setTimeout(() => rawDiff.layout(), 50);
         } else {
             rawContainer.style.display = 'none';
             if (decomposedSplitEl) decomposedSplitEl.style.display = 'flex';
-            relabelToggle('Show Raw XML');
+            relabelToggle('显示原始 XML');
             setTimeout(() => componentDiff.layout(), 50);
         }
     }
@@ -246,7 +246,7 @@ export function openView(platform, { title, xml, decompose }) {
         } catch { model = null; }
     }
 
-    const buttons = [{ label: 'Close', onClick: () => true }];
+    const buttons = [{ label: '关闭', onClick: () => true }];
     if (model) {
         // Tree with everything UNCHANGED (single version); selecting a component
         // shows its content; a raw toggle restores the full XML.
@@ -260,8 +260,8 @@ export function openView(platform, { title, xml, decompose }) {
         contentArea.append(leftPane, editor.el);
         let raw = false;
         buttons.unshift({
-            label: 'Show Raw XML',
-            onClick: () => { raw = !raw; if (raw) editor.setValue(xml); toggleViewLabel(raw ? 'Show Component View' : 'Show Raw XML'); return false; }
+            label: '显示原始 XML',
+            onClick: () => { raw = !raw; if (raw) editor.setValue(xml); toggleViewLabel(raw ? '显示组件视图' : '显示原始 XML'); return false; }
         });
     } else {
         contentArea.appendChild(editor.el);

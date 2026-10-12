@@ -1,9 +1,9 @@
 {
     "id": "simple-channel-history",
-    "name": "Simple Channel History",
+    "name": "通道历史记录",
     "version": "2.8.0",
     "author": "Diridium Technologies Inc.",
-    "description": "Version history for channels and code templates: a 'View History' action on each, with a decomposed component diff (side-by-side), revert, and prune, plus a Deleted Items settings tab. Web administrator UI for the simple-channel-history engine plugin.",
+    "description": "通道和代码模板的版本历史：每个都提供"查看历史"操作，支持分解式组件差异比较（并排显示）、回退和修剪，以及已删除项设置页签。simple-channel-history 引擎插件的 Web 管理员界面。",
     "oie": { "apiMin": "4.6" },
     "client": { "entry": "web/plugin.js" }
 }

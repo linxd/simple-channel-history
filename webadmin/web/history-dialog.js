@@ -20,7 +20,7 @@ function shortHash(rev) {
 // Diff header label: "Old - Rev 3 (user: admin, time: 2026-01-02 14:23)".
 function diffLabel(side, rev) {
     const ts = formatDateTime(rev.time).slice(0, 16);   // yyyy-MM-dd HH:mm
-    return `${side} - ${shortHash(rev)} (user: ${rev.committerName || 'Unknown'}, time: ${ts})`;
+    return `${side} - ${shortHash(rev)} (用户: ${rev.committerName || '未知'}, 时间: ${ts})`;
 }
 
 export function openHistory(platform, api, { kind, id, name }) {
@@ -47,13 +47,13 @@ export function openHistory(platform, api, { kind, id, name }) {
     const table = new platform.ui.DataTable([
         // Sorting disabled (Swing RevisionInfoTable.setSortable(false)) — the list
         // stays newest-first as the server returns it.
-        { key: 'revision', label: 'Revision', width: 120, sortable: false, render: (r) => shortHash(r) },
-        { key: 'committerName', label: 'User', sortable: false, render: (r) => r.committerName || 'Unknown' },
-        { key: 'time', label: 'Date', sortable: false, render: (r) => formatRevisionTime(r.time) }
+        { key: 'revision', label: '修订', width: 120, sortable: false, render: (r) => shortHash(r) },
+        { key: 'committerName', label: '用户', sortable: false, render: (r) => r.committerName || '未知' },
+        { key: 'time', label: '日期', sortable: false, render: (r) => formatRevisionTime(r.time) }
     ], {
         selectable: 'multi',
         rowKey: (r) => String(r.hash),
-        emptyText: 'No history for this item yet.',
+        emptyText: '此项暂无历史记录。',
         onSelect: () => updateButtons(),
         onActivate: (r) => compareWithPrevious(r),
         onContextMenu: (r, e) => rowMenu(r, e)
@@ -61,12 +61,12 @@ export function openHistory(platform, api, { kind, id, name }) {
     table.el.style.cssText = 'flex:1; min-height:0; overflow:auto; border:1px solid var(--line); border-radius:6px';
 
     const help = h('div', { style: 'font-size:11.5px; color:var(--text-dim); line-height:1.6; padding:2px 2px 8px' },
-        h('div', 'Double-click a revision to compare with previous'),
-        h('div', 'Ctrl/Cmd-click to select two revisions, then Show Diff'),
-        h('div', 'Right-click for prune option'));
+        h('div', '双击修订版本可与前一版本进行比较'),
+        h('div', 'Ctrl/Cmd 点击选择两个修订版本，然后显示差异'),
+        h('div', '右键点击可修剪旧版本'));
 
-    const showDiffBtn = h('button.btn', { onClick: () => showDiffSelected() }, 'Show Diff');
-    const revertBtn = h('button.btn', { onClick: () => revertSelected() }, 'Revert to Selected');
+    const showDiffBtn = h('button.btn', { onClick: () => showDiffSelected() }, '显示差异');
+    const revertBtn = h('button.btn', { onClick: () => revertSelected() }, '回退到所选');
     const buttonBar = h('div', { style: 'display:flex; gap:8px; justify-content:flex-end; padding-top:10px' }, showDiffBtn, revertBtn);
 
     const body = h('div', { style: 'display:flex; flex-direction:column; width:min(680px, calc(100vw - 60px)); height:min(440px, calc(100vh - 160px))' },
@@ -85,7 +85,7 @@ export function openHistory(platform, api, { kind, id, name }) {
         try {
             rows = await ops.history();
         } catch (e) {
-            toast(e.message || 'Failed to load history.', 'error');
+            toast(e.message || '加载历史记录失败。', 'error');
             rows = [];
         }
         table.setRows(rows);
@@ -98,14 +98,14 @@ export function openHistory(platform, api, { kind, id, name }) {
         try {
             const [oldXml, newXml] = await Promise.all([ops.content(older.hash), ops.content(newer.hash)]);
             openDiff(platform, {
-                title: `${isChannel ? 'Channel' : 'Code Template'} Diff - ${name}`,
-                oldLabel: diffLabel('Old', older),
-                newLabel: diffLabel('New', newer),
+                title: `${isChannel ? '通道' : '代码模板'} 差异 - ${name}`,
+                oldLabel: diffLabel('旧', older),
+                newLabel: diffLabel('新', newer),
                 oldXml, newXml,
                 decompose: isChannel
             });
         } catch (e) {
-            toast(e.message || 'Failed to load revision content.', 'error');
+            toast(e.message || '加载修订内容失败。', 'error');
         }
     }
 
@@ -116,7 +116,7 @@ export function openHistory(platform, api, { kind, id, name }) {
 
     function compareWithPrevious(rev) {
         const older = olderThan(rev);
-        if (!older.length) { toast('No previous revision to compare to.', 'info'); return; }
+        if (!older.length) { toast('没有更早的修订版本可供比较。', 'info'); return; }
         // Nearest older revision = the newest among those older than this one.
         const prev = older.reduce((best, r) => (r.time > best.time ? r : best));
         showDiff(prev, rev);
@@ -126,18 +126,18 @@ export function openHistory(platform, api, { kind, id, name }) {
         const sel = table.selectedRows();
         if (sel.length !== 1 || isLatest(sel[0])) return;
         const rev = sel[0];
-        const ok = await confirmDialog('Confirm Revert',
-            `Are you sure you want to revert to revision ${shortHash(rev)}?\nThis will overwrite the current ${noun}.`,
-            { danger: true, okLabel: 'Revert' });
+        const ok = await confirmDialog('确认回退',
+            `确定要回退到修订版本 ${shortHash(rev)} 吗？\n这将覆盖当前的${noun}。`,
+            { danger: true, okLabel: '回退' });
         if (!ok) return;
         try {
             const result = await ops.revert(rev.hash);
-            if (result === false || result === 'false') { toast('Revert failed.', 'error'); return; }
-            toast(`${isChannel ? 'Channel' : 'Code template'} reverted successfully.`, 'success');
+            if (result === false || result === 'false') { toast('回退失败。', 'error'); return; }
+            toast(`${isChannel ? '通道' : '代码模板'}已成功回退。`, 'success');
             platform.events.emit(isChannel ? 'channels:changed' : 'codeTemplates:changed', { id });
             reload();
         } catch (e) {
-            toast(e.message || 'Revert failed.', 'error');
+            toast(e.message || '回退失败。', 'error');
         }
     }
 
@@ -145,30 +145,30 @@ export function openHistory(platform, api, { kind, id, name }) {
         const older = olderThan(rev);
         platform.ui.contextMenu(e.clientX, e.clientY, [
             {
-                label: 'Prune older revisions', icon: 'trash', danger: true,
+                label: '修剪旧版本', icon: 'trash', danger: true,
                 onClick: () => pruneOlder(rev, older.length)
             }
         ]);
     }
 
     async function pruneOlder(rev, count) {
-        if (!count) { toast('No older revisions to delete.', 'info'); return; }
-        const ok = await confirmDialog('Confirm Prune',
-            `Delete ${count} revision(s) older than ${shortHash(rev)}?\nThis action cannot be undone.`,
-            { danger: true, okLabel: 'Delete' });
+        if (!count) { toast('没有更早的修订版本可删除。', 'info'); return; }
+        const ok = await confirmDialog('确认修剪',
+            `删除 ${shortHash(rev)} 之前的 ${count} 个修订版本？\n此操作不可撤销。`,
+            { danger: true, okLabel: '删除' });
         if (!ok) return;
         try {
             const deleted = await ops.prune(rev.hash);
             const n = parseInt(deleted, 10);
-            toast(`Deleted ${Number.isNaN(n) ? count : n} older revision(s).`, 'success');
+            toast(`已删除 ${Number.isNaN(n) ? count : n} 个旧修订版本。`, 'success');
             reload();
         } catch (e) {
-            toast(e.message || 'Prune failed.', 'error');
+            toast(e.message || '修剪失败。', 'error');
         }
     }
 
     updateButtons();
-    const handle = modal({ title: `Version History - ${name}`, body, size: 'wide', buttons: [{ label: 'Close', onClick: () => true }] });
+    const handle = modal({ title: `版本历史 - ${name}`, body, size: 'wide', buttons: [{ label: '关闭', onClick: () => true }] });
     reload();
     return handle;
 }
