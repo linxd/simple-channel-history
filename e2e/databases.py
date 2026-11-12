@@ -16,11 +16,14 @@ import time
 PASSWORD = "Sch-e2e-Pass-1"   # meets SQL Server's complexity rule; throwaway test databases only
 PLUGIN_TABLES = ("channel_history", "code_template_history", "deleted_channel", "deleted_code_template")
 
+# Pinned by digest, so a run tests the same database build until someone moves the pin. The tag
+# says what each digest is: PostgreSQL 18.3, MySQL 8.4.11, SQL Server 2022 and Oracle Free 23 as of
+# 2026-10-12.
 IMAGES = {
-    "postgres": "postgres:18.3-alpine",
-    "mysql": "mysql:8.4",
-    "sqlserver": "mcr.microsoft.com/mssql/server:2022-latest",
-    "oracle": "gvenzl/oracle-free:23-slim",
+    "postgres": "postgres:18.3-alpine@sha256:54451ecb8ab38c24c3ec123f2fd501303a3a1856a5c66e98cecf2460d5e1e9d7",
+    "mysql": "mysql:8.4@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242",
+    "sqlserver": "mcr.microsoft.com/mssql/server:2022-latest@sha256:4402d880dd4c34bfa7d8705e56a86cd6c88da80a1f6bbbe741f999e76264a090",
+    "oracle": "gvenzl/oracle-free:23-slim@sha256:6d61d267a3b978c24c5ac1790e62e927416a0aec446bd86e4b3a1527562757bd",
 }
 KINDS = ("derby", "postgres", "mysql", "sqlserver", "sqlserver-ms", "oracle")
 
@@ -73,7 +76,10 @@ class Database:
 
     def _ready(self):
         if self.server == "postgres":
-            return docker("exec", self.container, "pg_isready", "-U", "oie", "-d", "postgres", check=False).returncode == 0
+            # Over TCP: the image first runs a temporary init server on the Unix socket only, and
+            # shuts it down before starting the real one, so a socket check can answer too early.
+            return docker("exec", self.container, "pg_isready", "-h", "127.0.0.1", "-U", "oie", "-d", "postgres",
+                          check=False).returncode == 0
         if self.server == "mysql":
             # The image runs a temporary server on port 0 before the real one on 3306.
             logs = docker("logs", self.container, check=False)

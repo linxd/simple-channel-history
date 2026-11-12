@@ -15,6 +15,7 @@
     <serverClasses>
         <string>com.diridium.ChannelVersionController</string>
         <string>com.diridium.CodeTemplateVersionController</string>
+        <string>com.diridium.ChannelHistoryPermissions</string>
     </serverClasses>
 
     <clientClasses>
@@ -32,7 +33,7 @@
         </entry>
     </sqlMapConfigs>
 
-    <library type="CLIENT" path="java-diff-utils-4.12.jar" />
+    <library type="CLIENT" path="java-diff-utils-${java-diff-utils.version}.jar" />
 
     <library type="SERVER" path="simple-channel-history-server-${project.version}.jar" />
     <library type="SHARED" path="simple-channel-history-shared-${project.version}.jar" />

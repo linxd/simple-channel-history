@@ -8,13 +8,12 @@
  * Channels get the decomposed diff; code templates get a raw side-by-side diff.
  */
 
-import { formatRevisionTime, formatDateTime } from './schi-core.js';
+import { formatRevisionTime, formatDateTime, allows, TASKS } from './schi-core.js';
 import { openDiff } from './diff-window.js';
 
+// How the administrators label a revision: "Rev" and the item's revision number (RevisionInfo.getShortHash).
 function shortHash(rev) {
-    if (rev.hash != null && /^\d+$/.test(String(rev.hash))) return `Rev ${rev.revision}`;
-    const hs = rev.hash != null ? String(rev.hash) : '';
-    return hs.length >= 8 ? hs.substring(0, 8) : hs;
+    return `Rev ${rev.revision}`;
 }
 
 // Diff header label: "Old - Rev 3 (user: admin, time: 2026-01-02 14:23)".
@@ -26,7 +25,10 @@ function diffLabel(side, rev) {
 export function openHistory(platform, api, { kind, id, name }) {
     const { h, modal, toast, confirmDialog } = platform.ui;
     const isChannel = kind === 'channel';
-    const noun = isChannel ? 'channel' : 'code template';
+    const noun = isChannel ? '通道' : '代码模板';
+    // Actions the user's role can't use are hidden rather than refused after a confirmation.
+    const canRevert = allows(platform, isChannel ? TASKS.REVERT_CHANNEL : TASKS.REVERT_CODE_TEMPLATE);
+    const canPrune = allows(platform, isChannel ? TASKS.PRUNE_CHANNEL_HISTORY : TASKS.PRUNE_CODE_TEMPLATE_HISTORY);
 
     const ops = isChannel
         ? {
@@ -63,13 +65,15 @@ export function openHistory(platform, api, { kind, id, name }) {
     const help = h('div', { style: 'font-size:11.5px; color:var(--text-dim); line-height:1.6; padding:2px 2px 8px' },
         h('div', '双击修订版本可与前一版本进行比较'),
         h('div', 'Ctrl/Cmd 点击选择两个修订版本，然后显示差异'),
-        h('div', '右键点击可修剪旧版本'));
+        canPrune ? h('div', '右键点击可修剪旧版本') : null);
 
     const showDiffBtn = h('button.btn', { onClick: () => showDiffSelected() }, '显示差异');
     const revertBtn = h('button.btn', { onClick: () => revertSelected() }, '回退到所选');
-    const buttonBar = h('div', { style: 'display:flex; gap:8px; justify-content:flex-end; padding-top:10px' }, showDiffBtn, revertBtn);
+    const buttonBar = h('div', { style: 'display:flex; gap:8px; justify-content:flex-end; padding-top:10px' },
+        showDiffBtn, canRevert ? revertBtn : null);
 
-    const body = h('div', { style: 'display:flex; flex-direction:column; width:min(680px, calc(100vw - 60px)); height:min(440px, calc(100vh - 160px))' },
+    // Fills the dialog; the dialog's width is set on the modal below.
+    const body = h('div', { style: 'display:flex; flex-direction:column; width:100%; height:min(440px, calc(100vh - 160px))' },
         table.el, help, buttonBar);
 
     function isLatest(rev) { return rows.length > 0 && String(rows[0].hash) === String(rev.hash); }
@@ -126,9 +130,11 @@ export function openHistory(platform, api, { kind, id, name }) {
         const sel = table.selectedRows();
         if (sel.length !== 1 || isLatest(sel[0])) return;
         const rev = sel[0];
-        const ok = await confirmDialog('确认回退',
-            `确定要回退到修订版本 ${shortHash(rev)} 吗？\n这将覆盖当前的${noun}。`,
-            { danger: true, okLabel: '回退' });
+        // A channel revert restores the channel definition; the server keeps its enabled state, pruning and tags.
+        const message = isChannel
+            ? `回退到修订版本 ${shortHash(rev)}？\n这将把通道恢复为该修订版本中保存的状态：连接器、脚本、过滤器、转换器，以及初始状态和消息存储等通道属性。\n以下内容保持现状：启用或禁用状态、消息修剪设置和标签。`
+            : `确定要回退到修订版本 ${shortHash(rev)} 吗？\n这将覆盖当前的${noun}。`;
+        const ok = await confirmDialog('确认回退', message, { danger: true, okLabel: '回退' });
         if (!ok) return;
         try {
             const result = await ops.revert(rev.hash);
@@ -142,6 +148,7 @@ export function openHistory(platform, api, { kind, id, name }) {
     }
 
     function rowMenu(rev, e) {
+        if (!canPrune) return;
         const older = olderThan(rev);
         platform.ui.contextMenu(e.clientX, e.clientY, [
             {
@@ -168,7 +175,9 @@ export function openHistory(platform, api, { kind, id, name }) {
     }
 
     updateButtons();
-    const handle = modal({ title: `版本历史 - ${name}`, body, size: 'wide', buttons: [{ label: '关闭', onClick: () => true }] });
+    const handle = modal({ title: `版本历史 - ${name}`, body, buttons: [{ label: '关闭', onClick: () => true }] });
+    // 700 px, the width of the Swing history dialog.
+    handle.el.style.width = 'min(700px, calc(100vw - 40px))';
     reload();
     return handle;
 }

@@ -4,7 +4,7 @@
 <!-- SPDX-FileCopyrightText: Copyright 2025-2026 Diridium Technologies Inc. -->
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd" child.project.url.inherit.append.path="false">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.diridium</groupId>
@@ -15,27 +15,34 @@
     <packaging>pom</packaging>
 
     <properties>
-        <revision>2.8.0</revision>
+        <revision>2.9.0</revision>
 
         <plugin.supported.mc.versions>${mc.version}</plugin.supported.mc.versions>
 
-        <mc.version>4.6.0</mc.version>
-        <ognl.version>3.2.15</ognl.version>
-        <javax-servlet.version>4.0.1</javax-servlet.version>
+        <mc.version>4.7.0</mc.version>
+        <!-- SHA-256 of the OIE distribution for mc.version (oie_unix_<version>.tar.gz), from
+             the release's sha256sums file. scripts/install-engine-jars.sh checks the download
+             against it before taking the engine jars from it, and CI's e2e job checks the
+             tarball it runs against it too. Update it with mc.version. -->
+        <oie.dist.sha256>ab08558873dc6be1e474afaacc46efe94d29c945cd3381c10d0ae548ecb429de</oie.dist.sha256>
+        <!-- The provided versions match what OIE ships (server-lib and client-lib), since that is
+             what the plugin runs against: compiling against a newer line would let code call
+             methods the engine lacks. Re-check them on every mc.version bump. -->
+        <javax-servlet.version>3.1.0</javax-servlet.version>
         <javax-rs-api.version>2.0.1</javax-rs-api.version>
-        <commons-beanutils.version>1.9.4</commons-beanutils.version>
-        <xstream.version>1.4.18</xstream.version>
+        <xstream.version>1.4.20</xstream.version>
         <junit.version>4.13.2</junit.version>
-        <rhino.version>1.7.13</rhino.version>
-        <xpp3.version>1.1.4c</xpp3.version>
-        <commons-io.version>2.10.0</commons-io.version>
-        <commons-lang3.version>3.12.0</commons-lang3.version>
-        <log4j.version>2.17.2</log4j.version>
-        <javassist.version>3.28.0-GA</javassist.version>
-        <slf4j.version>1.7.32</slf4j.version>
-        <mybatis.version>3.5.9</mybatis.version>
+        <log4j.version>2.26.1</log4j.version>
+        <slf4j.version>1.7.30</slf4j.version>
+        <mybatis.version>3.1.1</mybatis.version>
+
+        <!-- Bundled in the zip, unlike the provided ones above. package/resources/plugin.xml
+             names its jar from this property, so the two can't drift apart. -->
+        <java-diff-utils.version>4.12</java-diff-utils.version>
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Fixed entry times in the jars, so the same source builds the same bytes. -->
+        <project.build.outputTimestamp>2026-10-12T00:00:00Z</project.build.outputTimestamp>
 
         <!-- Signing disabled by default. Use -Psigning to enable. -->
         <signing.skip>true</signing.skip>
@@ -58,17 +65,12 @@
         </profile>
     </profiles>
 
+    <url>https://github.com/diridium-com/simple-channel-history</url>
+
     <organization>
         <name>Diridium Technologies Inc.</name>
-        <url>https://github.com/pacmano1/simple-channel-history</url>
+        <url>https://github.com/diridium-com</url>
     </organization>
-
-    <repositories>
-        <repository>
-            <id>mirth-libs</id>
-            <url>https://repo.repsy.io/mvn/kpalang/mirthconnect</url>
-        </repository>
-    </repositories>
 
     <dependencies>
         <dependency>
@@ -90,54 +92,6 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <groupId>com.mirth.connect.connectors</groupId>
-            <artifactId>vm-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.mirth.connect.plugins.datatypes</groupId>
-            <artifactId>datatype-raw-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.mirth.connect.plugins.datatypes</groupId>
-            <artifactId>datatype-hl7v2-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.mirth.connect.connectors</groupId>
-            <artifactId>js-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.mirth.connect.plugins</groupId>
-            <artifactId>javascriptstep-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.mirth.connect.connectors</groupId>
-            <artifactId>tcp-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.mirth.connect.plugins</groupId>
-            <artifactId>mllpmode-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.mirth.connect.plugins</groupId>
-            <artifactId>http-shared</artifactId>
-            <version>${mc.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
             <groupId>javax.servlet</groupId>
             <artifactId>javax.servlet-api</artifactId>
             <version>${javax-servlet.version}</version>
@@ -147,31 +101,6 @@
             <groupId>javax.ws.rs</groupId>
             <artifactId>javax.ws.rs-api</artifactId>
             <version>${javax-rs-api.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>commons-beanutils</groupId>
-            <artifactId>commons-beanutils</artifactId>
-            <version>${commons-beanutils.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>ognl</groupId>
-            <artifactId>ognl</artifactId>
-            <version>${ognl.version}</version>
-            <exclusions>
-                <exclusion>
-                    <!-- excluding the dependency to avoid classloading issues
-                       because MC already bundles a higher version. -->
-                    <groupId>org.javassist</groupId>
-                    <artifactId>javassist</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>org.javassist</groupId>
-            <artifactId>javassist</artifactId>
-            <version>${javassist.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -190,30 +119,6 @@
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-core</artifactId>
             <version>${log4j.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
-            <version>${commons-lang3.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>commons-io</groupId>
-            <artifactId>commons-io</artifactId>
-            <version>${commons-io.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>xpp3</groupId>
-            <artifactId>xpp3</artifactId>
-            <version>${xpp3.version}</version>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.mozilla</groupId>
-            <artifactId>rhino</artifactId>
-            <version>${rhino.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -251,14 +156,22 @@
                 <version>3.7.0</version>
                 <configuration>
                     <release>17</release>
+                    <!-- No annotation processing: the plugin uses none, and javac would otherwise run any
+                         processor it finds in a classpath jar, the signing build included. -->
+                    <proc>none</proc>
                 </configuration>
             </plugin>
+            <!-- 3.2.0 or later honours project.build.outputTimestamp. The default entries
+                 (Built-By among them) are left out: they record the build machine's user. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
-                <version>3.0.2</version>
+                <version>3.4.2</version>
                 <configuration>
                     <archive>
+                        <manifest>
+                            <addDefaultEntries>false</addDefaultEntries>
+                        </manifest>
                         <manifestEntries>
                             <Application-Name>Simple Channel History</Application-Name>
                             <url>${project.url}</url>

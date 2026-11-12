@@ -6,7 +6,7 @@
  * Show Diff (two same-type items), Download XML, and Purge.
  */
 
-import { makeApi, formatDateTime } from './schi-core.js';
+import { makeApi, formatDateTime, allows, TASKS, DELETED_ITEMS_TAB } from './schi-core.js';
 import { openView, openDiff } from './diff-window.js';
 
 const TYPE_CHANNEL = 'Channel';
@@ -21,10 +21,13 @@ export function registerDeletedItems(platform) {
         ? api.getDeletedChannelContent(item.id)
         : api.getDeletedCodeTemplateContent(item.id);
 
+    // Channel and code template snapshots are numbered separately, both from 1, so a row is its type plus its number.
+    const keyOf = (item) => `${item.type}:${item.id}`;
+
     function DeletedItemsPanel({ setTasks }) {
         const [items, setItems] = React.useState([]);
         const [loading, setLoading] = React.useState(true);
-        const [error, setError] = React.useState(null);
+        const [errors, setErrors] = React.useState([]);
         const [typeFilter, setTypeFilter] = React.useState('All');
         const [search, setSearch] = React.useState('');
         const [selected, setSelected] = React.useState(() => new Set());
@@ -32,27 +35,32 @@ export function registerDeletedItems(platform) {
 
         const load = React.useCallback(async () => {
             setLoading(true);
-            try {
-                const [chs, cts] = await Promise.all([api.getDeletedChannels(), api.getDeletedCodeTemplates()]);
-                const merged = [
-                    ...chs.map((x) => ({ ...x, type: TYPE_CHANNEL })),
-                    ...cts.map((x) => ({ ...x, type: TYPE_CODE_TEMPLATE }))
-                ];
-                setItems(merged);
-                setSelected(new Set());
-                setError(null);
-            } catch (e) {
-                setError(e.message || 'Failed to load deleted items.');
-                setItems([]);
-            } finally {
-                setLoading(false);
-            }
+            // Each list loads on its own: a user may be allowed one and refused the other. A list the
+            // user's role doesn't cover isn't requested at all.
+            const lists = [
+                [TYPE_CHANNEL, 'Deleted channels', TASKS.VIEW_DELETED_CHANNELS, () => api.getDeletedChannels()],
+                [TYPE_CODE_TEMPLATE, 'Deleted code templates', TASKS.VIEW_DELETED_CODE_TEMPLATES, () => api.getDeletedCodeTemplates()]
+            ].filter(([, , task]) => allows(platform, task));
+            const results = await Promise.allSettled(lists.map(([, , , request]) => request()));
+            const merged = [];
+            const failed = lists.length ? [] : ["You don't have permission to see deleted channels or code templates."];
+            results.forEach((result, i) => {
+                const [type, label] = lists[i];
+                if (result.status === 'fulfilled') merged.push(...result.value.map((x) => ({ ...x, type })));
+                else failed.push(`${label} could not be loaded: ${result.reason?.message || 'unknown error'}`);
+            });
+            setItems(merged);
+            setErrors(failed);
+            setSelected(new Set());
+            setLoading(false);
         }, []);
 
+        // Once, when the tab opens. load never changes, and depending on setTasks would reload the tab
+        // whenever the host passed a new function.
         React.useEffect(() => {
             load();
             setTasks('Deleted Items Tasks', [taskButton('Refresh', 'refresh', () => load())]);
-        }, [load, setTasks]);
+        }, []);
 
         const visible = React.useMemo(() => {
             let list = items;
@@ -69,16 +77,17 @@ export function registerDeletedItems(platform) {
             });
         }, [items, typeFilter, search, sort]);
 
-        const selectedItems = visible.filter((i) => selected.has(i.id));
+        const selectedItems = visible.filter((i) => selected.has(keyOf(i)));
         const one = selectedItems.length === 1 ? selectedItems[0] : null;
         const two = selectedItems.length === 2 ? selectedItems : null;
         const sameTypePair = two && two[0].type === two[1].type ? two : null;
 
         const onRowClick = (item, e) => {
+            const key = keyOf(item);
             setSelected((prev) => {
                 const next = new Set(prev);
-                if (e.metaKey || e.ctrlKey) { next.has(item.id) ? next.delete(item.id) : next.add(item.id); }
-                else { next.clear(); next.add(item.id); }
+                if (e.metaKey || e.ctrlKey) { next.has(key) ? next.delete(key) : next.add(key); }
+                else { next.clear(); next.add(key); }
                 return next;
             });
         };
@@ -124,15 +133,18 @@ export function registerDeletedItems(platform) {
                 const res = item.type === TYPE_CHANNEL
                     ? await api.purgeDeletedChannel(item.id)
                     : await api.purgeDeletedCodeTemplate(item.id);
-                if (res === false || res === 'false') { toast('Purge failed.', 'error'); return; }
-                toast(`Purged the snapshot for "${item.name}".`, 'success');
+                // false: there was nothing to purge, so the snapshot was already gone.
+                if (res === false || res === 'false') toast(`The snapshot for "${item.name}" was already purged.`, 'info');
+                else toast(`Purged the snapshot for "${item.name}".`, 'success');
                 load();
             } catch (e) { toast(e.message || 'Purge failed.', 'error'); }
         }
 
         const sortArrow = (key) => (sort.key === key ? (sort.dir > 0 ? ' ▲' : ' ▼') : '');
-        const Th = ({ col, label, width }) => (
-            <th className="sortable" style={width ? { width } : null} onClick={() => toggleSort(col)}>{label}{sortArrow(col)}</th>
+        // A plain function, not a component: a component defined here would be a new type on every
+        // render, so React would remount the header cells each time.
+        const th = (col, label, width) => (
+            <th key={col} className="sortable" style={width ? { width } : null} onClick={() => toggleSort(col)}>{label}{sortArrow(col)}</th>
         );
 
         return (
@@ -156,27 +168,29 @@ export function registerDeletedItems(platform) {
                     <span className="text-text-faint" style={{ fontSize: 12 }}>{visible.length} item(s)</span>
                 </div>
 
+                {errors.map((message) => (
+                    <div key={message} style={{ color: 'var(--err)', fontSize: 12 }}>{message}</div>
+                ))}
+
                 {loading ? (
                     <div className="text-text-faint">Loading…</div>
-                ) : error ? (
-                    <div style={{ color: 'var(--err)' }}>{error}</div>
                 ) : (
                     <div style={{ flex: 1, minHeight: 0, overflow: 'auto', border: '1px solid var(--line)', borderRadius: 6 }}>
                         <table className="dt" style={{ width: '100%' }}>
                             <thead>
                                 <tr>
-                                    <Th col="type" label="Type" width={120} />
-                                    <Th col="name" label="Name" />
-                                    <Th col="itemId" label="Item ID" width={240} />
-                                    <Th col="deletedBy" label="Deleted By" width={130} />
-                                    <Th col="dateDeleted" label="Date Deleted" width={170} />
+                                    {th('type', 'Type', 120)}
+                                    {th('name', 'Name')}
+                                    {th('itemId', 'Item ID', 240)}
+                                    {th('deletedBy', 'Deleted By', 130)}
+                                    {th('dateDeleted', 'Date Deleted', 170)}
                                 </tr>
                             </thead>
                             <tbody>
                                 {visible.length === 0 ? (
                                     <tr><td colSpan={5} className="text-text-faint" style={{ padding: 12 }}>No deleted items.</td></tr>
                                 ) : visible.map((item) => (
-                                    <tr key={item.id} className={selected.has(item.id) ? 'selected' : ''}
+                                    <tr key={keyOf(item)} className={selected.has(keyOf(item)) ? 'selected' : ''}
                                         style={{ cursor: 'pointer' }}
                                         onClick={(e) => onRowClick(item, e)}
                                         onDoubleClick={() => viewXml(item)}>
@@ -202,5 +216,6 @@ export function registerDeletedItems(platform) {
         );
     }
 
-    platform.registerSettingsPanel({ label: 'Channel History: Deleted Items', component: DeletedItemsPanel });
+    // The label is also the tab's task group, which the server registers with a permission.
+    platform.registerSettingsPanel({ label: DELETED_ITEMS_TAB, component: DeletedItemsPanel });
 }

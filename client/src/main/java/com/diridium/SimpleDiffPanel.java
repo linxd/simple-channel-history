@@ -14,6 +14,7 @@ import java.awt.Graphics;
 import java.awt.Rectangle;
 import java.awt.event.AdjustmentEvent;
 import java.awt.event.AdjustmentListener;
+import java.awt.geom.Rectangle2D;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -138,7 +139,6 @@ public class SimpleDiffPanel extends JPanel {
         return pane;
     }
 
-    @SuppressWarnings("deprecation")
     private static class DiffTextPane extends JTextPane {
         private final List<int[]> lineOffsets = new ArrayList<>();
         private final List<Color> lineColors = new ArrayList<>();
@@ -176,8 +176,10 @@ public class SimpleDiffPanel extends JPanel {
                 }
                 int[] offsets = lineOffsets.get(i);
                 try {
-                    Rectangle r = modelToView(offsets[0]);
-                    if (r != null) {
+                    Rectangle2D view = modelToView2D(offsets[0]);
+                    if (view != null) {
+                        // getBounds rounds outward, the whole pixels the deprecated modelToView gave.
+                        Rectangle r = view.getBounds();
                         g.setColor(color);
                         g.fillRect(0, r.y, getWidth(), r.height);
                     }
@@ -247,8 +249,8 @@ public class SimpleDiffPanel extends JPanel {
     }
 
     private void displayDiff(String leftContent, String rightContent) {
-        List<String> leftLines = leftContent.isEmpty() ? List.of() : Arrays.asList(leftContent.split("\n", -1));
-        List<String> rightLines = rightContent.isEmpty() ? List.of() : Arrays.asList(rightContent.split("\n", -1));
+        List<String> leftLines = splitLines(leftContent);
+        List<String> rightLines = splitLines(rightContent);
 
         Patch<String> patch = DiffUtils.diff(leftLines, rightLines);
 
@@ -388,7 +390,7 @@ public class SimpleDiffPanel extends JPanel {
     }
 
     private void displayContent(String content) {
-        List<String> lines = content.isEmpty() ? List.of() : Arrays.asList(content.split("\n", -1));
+        List<String> lines = splitLines(content);
 
         StyledDocument doc = leftPane.getStyledDocument();
         Style normalStyle = doc.addStyle("normal", null);
@@ -461,6 +463,14 @@ public class SimpleDiffPanel extends JPanel {
         } else {
             lineNumBuilder.append("     ");
         }
+    }
+
+    /**
+     * The content's lines. Empty content is no lines, not one empty line, so a component that is new
+     * or removed shows as added or deleted lines rather than a changed one.
+     */
+    static List<String> splitLines(String content) {
+        return content.isEmpty() ? List.of() : Arrays.asList(content.split("\n", -1));
     }
 
     static List<String> toCharList(String s) {

@@ -4,6 +4,7 @@
 
 package com.diridium;
 
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,11 +12,16 @@ import java.util.Map;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.core.Context;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
 import javax.ws.rs.core.SecurityContext;
 
 import com.mirth.connect.client.core.ClientException;
+import com.mirth.connect.client.core.api.MirthApiException;
 import com.mirth.connect.model.Channel;
 import com.mirth.connect.model.ChannelMetadata;
+import com.mirth.connect.model.ChannelTag;
 import com.mirth.connect.model.ServerEvent;
 import com.mirth.connect.model.ServerEvent.Level;
 import com.mirth.connect.model.ServerEvent.Outcome;
@@ -85,14 +91,6 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
     public boolean revertChannel(String channelId, String revision) throws ClientException {
         try {
             Channel channel = repo.getChannelAtRevision(channelId, revision);
-            ChannelMetadata metadata = channel.getExportData().getMetadata();
-            if(metadata == null) {
-                metadata = new ChannelMetadata();
-                channel.getExportData().setMetadata(metadata);
-            }
-            // without this the userId will be null and will result in a warning
-            // on the client when user tries to save the same channel after reverting
-            metadata.setUserId(context.getUserId());
 
             // Get original description from the revision we're reverting to
             String oldDesc = channel.getDescription();
@@ -132,13 +130,15 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
             newDesc.append(REVERT_HISTORY_END);
 
             channel.setDescription(newDesc.toString());
+            // Read just before the save, so a change made meanwhile (enable/disable, a tag edit) is kept.
+            keepCurrentSettings(channel, channelId);
             boolean result = channelController.updateChannel(channel, context, true, Calendar.getInstance());
             log.debug("reverted Channel {} to revision {}", channelId, revision);
 
             Map<String, String> attributes = new LinkedHashMap<>();
             attributes.put("channel", "Channel[id=" + channelId + ",name=" + channel.getName() + "]");
             attributes.put("Reverted to revision", String.valueOf(revisionNumber));
-            eventController.dispatchEvent(new ServerEvent(serverId, PLUGIN_NAME, Level.INFORMATION, Outcome.SUCCESS, attributes));
+            audit(attributes);
 
             return result;
         }
@@ -146,6 +146,36 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
             log.warn("failed to revert Channel {} to revision {}", channelId, revision);
             throw new ClientException(e);
         }
+    }
+
+    /**
+     * A history row contains only the channel's source: the engine strips its settings and tags
+     * before the plugin's save hook runs. updateChannel stores whatever settings and tags arrive
+     * with the channel, so attach the current ones, as the channel editor does on every save.
+     * Otherwise a revert stores blank defaults: enabled, no pruning, and no tags.
+     */
+    private void keepCurrentSettings(Channel channel, String channelId) {
+        ConfigurationController configurationController = ConfigurationController.getInstance();
+
+        // getChannelMetadata() deserializes a fresh map on every call, so the channel's own metadata
+        // is reused as is: every setting in it, including any a later engine adds, stays unchanged.
+        ChannelMetadata metadata = configurationController.getChannelMetadata().get(channelId);
+        if (metadata == null) {
+            metadata = new ChannelMetadata(); // the engine treats missing metadata as enabled
+        }
+        // Stamped like an editor save, so another user's open editor sees the channel changed.
+        metadata.setLastModified(Calendar.getInstance());
+        // Recorded as saved by the reverting user, as an editor save is.
+        metadata.setUserId(context.getUserId());
+        channel.getExportData().setMetadata(metadata);
+
+        List<ChannelTag> tags = new ArrayList<>();
+        for (ChannelTag tag : configurationController.getChannelTags()) {
+            if (tag.getChannelIds().contains(channelId)) {
+                tags.add(tag);
+            }
+        }
+        channel.getExportData().setChannelTags(tags);
     }
 
     @Override
@@ -174,6 +204,8 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
     public boolean revertCodeTemplate(String codeTemplateId, String revision) throws ClientException {
         try {
             CodeTemplate codeTemplate = repo.getCodeTemplateAtRevision(codeTemplateId, revision);
+            // Read before the update: the engine sets the template's revision to the next number.
+            int revisionNumber = codeTemplate.getRevision();
 
             // Update the code template
             codeTemplateController.updateCodeTemplate(codeTemplate, context, true);
@@ -182,8 +214,8 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
             Map<String, String> attributes = new LinkedHashMap<>();
             attributes.put("Code Template", codeTemplate.getName());
             attributes.put("Code Template ID", codeTemplateId);
-            attributes.put("Reverted to revision", String.valueOf(codeTemplate.getRevision()));
-            eventController.dispatchEvent(new ServerEvent(serverId, PLUGIN_NAME, Level.INFORMATION, Outcome.SUCCESS, attributes));
+            attributes.put("Reverted to revision", String.valueOf(revisionNumber));
+            audit(attributes);
 
             return true;
         }
@@ -196,6 +228,7 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
     @Override
     @CheckAuthorizedChannelId
     public int pruneChannelHistory(String channelId, String revision) throws ClientException {
+        checkPruneCutoff(repo.isChannelHistoryRow(channelId, revision), "channel", channelId, revision);
         try {
             int deleted = repo.pruneChannelHistoryOlderThan(channelId, revision);
             log.info("Pruned {} older revisions for channel {}", deleted, channelId);
@@ -209,7 +242,7 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
             Map<String, String> attributes = new LinkedHashMap<>();
             attributes.put("channel", "Channel[id=" + channelId + ",name=" + channelName + "]");
             attributes.put("Revisions pruned", String.valueOf(deleted));
-            eventController.dispatchEvent(new ServerEvent(serverId, PLUGIN_NAME, Level.INFORMATION, Outcome.SUCCESS, attributes));
+            audit(attributes);
 
             return deleted;
         }
@@ -221,6 +254,7 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
 
     @Override
     public int pruneCodeTemplateHistory(String codeTemplateId, String revision) throws ClientException {
+        checkPruneCutoff(repo.isCodeTemplateHistoryRow(codeTemplateId, revision), "code template", codeTemplateId, revision);
         try {
             int deleted = repo.pruneCodeTemplateHistoryOlderThan(codeTemplateId, revision);
             log.info("Pruned {} older revisions for code template {}", deleted, codeTemplateId);
@@ -235,7 +269,7 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
             attributes.put("Code Template", templateName);
             attributes.put("Code Template ID", codeTemplateId);
             attributes.put("Revisions pruned", String.valueOf(deleted));
-            eventController.dispatchEvent(new ServerEvent(serverId, PLUGIN_NAME, Level.INFORMATION, Outcome.SUCCESS, attributes));
+            audit(attributes);
 
             return deleted;
         }
@@ -245,12 +279,32 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
         }
     }
 
+    /**
+     * Prune deletes every row older than the cut-off, so the cut-off must be one of the item's own
+     * rows. Any other number would cut the history at an arbitrary point, and a large one would delete
+     * every row, the newest too. The administrators always send a row from the item's own list.
+     */
+    private void checkPruneCutoff(boolean isOwnRow, String kind, String itemId, String revision) {
+        if (!isOwnRow) {
+            throw new MirthApiException(Response.status(Status.BAD_REQUEST).type(MediaType.TEXT_PLAIN)
+                    .entity("History " + revision + " is not a revision of " + kind + " " + itemId + "; nothing was pruned.").build());
+        }
+    }
+
     // ========== Deleted Item Endpoints ==========
+
+    // A deleted channel's snapshot is addressed by its row number, so the engine's
+    // @CheckAuthorizedChannelId can't see which channel it belongs to. These endpoints apply the
+    // user's channel restrictions themselves (an authorization plugin such as rbac sets them).
 
     @Override
     public List<DeletedItemInfo> getDeletedChannels() throws ClientException {
         try {
-            return repo.getDeletedChannels();
+            List<DeletedItemInfo> items = repo.getDeletedChannels();
+            if (doesUserHaveChannelRestrictions()) {
+                items.removeIf(item -> isChannelRedacted(item.getItemId()));
+            }
+            return items;
         } catch (Exception e) {
             log.warn("failed to get deleted channels", e);
             throw new ClientException(e);
@@ -259,6 +313,7 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
 
     @Override
     public String getDeletedChannelContent(long id) throws ClientException {
+        checkDeletedChannelAuthorized(id, null);
         try {
             return repo.getDeletedChannelContent(id);
         } catch (Exception e) {
@@ -269,20 +324,38 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
 
     @Override
     public boolean purgeDeletedChannel(long id) throws ClientException {
+        DeletedItemInfo info = repo.getDeletedChannelInfo(id);
+        checkDeletedChannelAuthorized(id, info);
         try {
-            DeletedItemInfo info = repo.getDeletedChannelInfo(id);
-            repo.purgeDeletedChannel(id);
+            // Nothing to purge: report it rather than a success.
+            if (info == null || repo.purgeDeletedChannel(id) == 0) {
+                return false;
+            }
 
             Map<String, String> attributes = new LinkedHashMap<>();
-            String chId = info != null ? info.getItemId() : "Unknown";
-            String chName = info != null ? info.getName() : "Unknown";
-            attributes.put("channel", "Channel[id=" + chId + ",name=" + chName + "]");
-            eventController.dispatchEvent(new ServerEvent(serverId, PLUGIN_NAME, Level.INFORMATION, Outcome.SUCCESS, attributes));
+            attributes.put("channel", "Channel[id=" + info.getItemId() + ",name=" + info.getName() + "]");
+            audit(attributes);
 
             return true;
         } catch (Exception e) {
             log.warn("failed to purge deleted channel id {}", id, e);
             throw new ClientException(e);
+        }
+    }
+
+    /**
+     * Refuses a restricted user a snapshot of a channel outside their restrictions. A snapshot that
+     * can't be found is refused too, so a restricted user can't learn which row numbers exist.
+     * Unrestricted users skip the lookup.
+     */
+    private void checkDeletedChannelAuthorized(long id, DeletedItemInfo info) {
+        if (doesUserHaveChannelRestrictions()) {
+            if (info == null) {
+                info = repo.getDeletedChannelInfo(id);
+            }
+            if (info == null || isChannelRedacted(info.getItemId())) {
+                throw new MirthApiException(Status.FORBIDDEN);
+            }
         }
     }
 
@@ -310,17 +383,28 @@ public class ChannelHistoryServlet extends MirthServlet implements ChannelHistor
     public boolean purgeDeletedCodeTemplate(long id) throws ClientException {
         try {
             DeletedItemInfo info = repo.getDeletedCodeTemplateInfo(id);
-            repo.purgeDeletedCodeTemplate(id);
+            // Nothing to purge: report it rather than a success.
+            if (info == null || repo.purgeDeletedCodeTemplate(id) == 0) {
+                return false;
+            }
 
             Map<String, String> attributes = new LinkedHashMap<>();
-            attributes.put("Code Template", info != null ? info.getName() : "Unknown");
-            attributes.put("Code Template ID", info != null ? info.getItemId() : "Unknown");
-            eventController.dispatchEvent(new ServerEvent(serverId, PLUGIN_NAME, Level.INFORMATION, Outcome.SUCCESS, attributes));
+            attributes.put("Code Template", info.getName());
+            attributes.put("Code Template ID", info.getItemId());
+            audit(attributes);
 
             return true;
         } catch (Exception e) {
             log.warn("failed to purge deleted code template id {}", id, e);
             throw new ClientException(e);
         }
+    }
+
+    /** Records one of the plugin's actions in the engine's event log, with the user and address that made it. */
+    private void audit(Map<String, String> attributes) {
+        ServerEvent event = new ServerEvent(serverId, PLUGIN_NAME, Level.INFORMATION, Outcome.SUCCESS, attributes);
+        event.setUserId(getCurrentUserId());
+        event.setIpAddress(getRequestIpAddress());
+        eventController.dispatchEvent(event);
     }
 }

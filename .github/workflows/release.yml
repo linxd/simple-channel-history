@@ -1,17 +1,28 @@
-# Builds the plugin against a downloaded OIE distribution on a semver tag and stages
-# a DRAFT GitHub Release with the unsigned zip + .sha256 sidecar.
+# Builds and tests the plugin against a downloaded OIE distribution on a semver tag and
+# stages a DRAFT GitHub Release with the unsigned zip + .sha256 sidecar.
 #
-#   git tag v2.8.0 && git push origin v2.8.0
+#   git tag v2.8.1 && git push origin v2.8.1
 #
 # The draft is never published by CI. Release flow from here (see RELEASING.md):
 # build and sign locally (YubiKey, -Psigning), replace the draft's zip AND regenerate
 # its .sha256 sidecar from the signed zip, publish by hand, then submit the published
 # release to the community catalog.
 #
-# The tag drives the version stamped into the build (-Drevision → pom/${project.version},
-# so plugin.xml pluginVersion + the library jar names) and webadmin/plugin.json; oie.json
-# is verified to match the tag. The engine version comes from the POM's mc.version (see
-# build.yml for why it is not hardcoded here).
+# The tag must match the version in every file that carries it (RELEASING.md, step 1),
+# so CI builds the committed files as they are, the same way the signed build does, and
+# plugin.xml's pluginVersion (what the engine reports as "installed") matches oie.json,
+# keeping the store's update detection accurate. The engine version comes from the POM's
+# mc.version (see build.yml for why it is not hardcoded here).
+#
+# A tag whose release is already published is refused, so re-running this workflow can
+# never replace a published release's files with an unsigned build. An existing draft is
+# updated: publishing it is the last, manual step.
+#
+# Two jobs, so the token that can write to the repository never shares a job with the
+# build. The build job runs Maven, npm and every package they pull in with a read-only
+# token, and uploads the zip. The release job holds the write token and runs only the
+# steps below it: no checkout, no build tools and no action, just gh to download that zip
+# and create or update the draft.
 
 name: Release
 
@@ -21,28 +32,54 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      asset: ${{ steps.pkg.outputs.asset }}
     steps:
-      - uses: actions/checkout@v4
+      # The token is read-only here, but no later step needs git credentials either, so keep it
+      # out of .git/config, where every later step, the npm install during the build included,
+      # could read it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: '17'
           cache: maven
 
-      - name: Resolve and verify version
+      - name: Check the tag against every version file
         id: ver
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          MANIFEST_VERSION="$(jq -r .version oie.json)"; MANIFEST_VERSION="${MANIFEST_VERSION#v}"
-          if [ "$VERSION" != "$MANIFEST_VERSION" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} implies version $VERSION but oie.json says $MANIFEST_VERSION"
+          HELP=org.apache.maven.plugins:maven-help-plugin:3.5.1
+          check() {
+            if [ "$2" != "$VERSION" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} is version ${VERSION}, but $1 says '$2'."
+              FAILED=1
+            fi
+          }
+          FAILED=0
+          check "pom.xml <revision>" "$(mvn -q -N "$HELP:evaluate" -Dexpression=revision -DforceStdout)"
+          check "oie.json version" "$(jq -r .version oie.json)"
+          # The engine loads a plugin only on the exact version in plugin.xml's mirthVersion (the
+          # pom's plugin.supported.mc.versions), so the store listing must say exactly that version too.
+          ENGINE="$(mvn -q -N "$HELP:evaluate" -Dexpression=plugin.supported.mc.versions -DforceStdout)"
+          for field in minEngineVersion maxEngineVersion; do
+            got="$(jq -r ".$field" oie.json)"
+            if [ "$got" != "$ENGINE" ]; then
+              echo "::error::oie.json $field is '${got}', but the plugin is built for OIE ${ENGINE} (pom.xml plugin.supported.mc.versions), the only version the engine will load it on."
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "Set the version in every file listed above (RELEASING.md, step 1) and tag again."
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -50,91 +87,113 @@ jobs:
       - name: Resolve the engine version from the POM
         id: engine
         run: |
-          MC_VERSION="$(mvn -q -N help:evaluate -Dexpression=mc.version -DforceStdout)"
+          MC_VERSION="$(mvn -q -N org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate -Dexpression=mc.version -DforceStdout)"
           if [ -z "$MC_VERSION" ]; then
             echo "::error::Could not read mc.version from pom.xml"
             exit 1
           fi
           echo "mc_version=$MC_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v${MC_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tarball=oie_unix_${MC_VERSION//./_}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Cache OIE distribution
-        id: oie-cache
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ steps.engine.outputs.tarball }}
-          key: oie-dist-${{ steps.engine.outputs.tag }}
+          path: .oie-dist
+          key: oie-dist-${{ steps.engine.outputs.mc_version }}
 
-      - name: Download OIE distribution (engine jars)
-        if: steps.oie-cache.outputs.cache-hit != 'true'
-        env:
-          OIE_TAG: ${{ steps.engine.outputs.tag }}
-          OIE_TARBALL: ${{ steps.engine.outputs.tarball }}
-        run: curl -fSL -o "$OIE_TARBALL" "https://github.com/OpenIntegrationEngine/engine/releases/download/${OIE_TAG}/${OIE_TARBALL}"
-
+      # The same script build.yml and local builds use: it checks the distribution against
+      # the SHA-256 in the POM before installing the engine jars from it.
       - name: Install engine jars into the local Maven repo
         env:
-          OIE_TARBALL: ${{ steps.engine.outputs.tarball }}
-          MC_VERSION: ${{ steps.engine.outputs.mc_version }}
-        run: |
-          tar xzf "$OIE_TARBALL"
-          # groupId:artifactId:path-under-oie — the 12 jars this plugin's modules
-          # depend on (scope provided). Installed at MC_VERSION to match pom.xml.
-          JARS=(
-            "com.mirth.connect:mirth-server:server-lib/mirth-server.jar"
-            "com.mirth.connect:donkey-server:server-lib/donkey/donkey-server.jar"
-            "com.mirth.connect:mirth-client-core:server-lib/mirth-client-core.jar"
-            "com.mirth.connect:mirth-client:client-lib/mirth-client.jar"
-            "com.mirth.connect.connectors:vm-shared:extensions/vm/vm-shared.jar"
-            "com.mirth.connect.connectors:js-shared:extensions/js/js-shared.jar"
-            "com.mirth.connect.connectors:tcp-shared:extensions/tcp/tcp-shared.jar"
-            "com.mirth.connect.plugins:mllpmode-shared:extensions/mllpmode/mllpmode-shared.jar"
-            "com.mirth.connect.plugins:http-shared:extensions/http/http-shared.jar"
-            "com.mirth.connect.plugins:javascriptstep-shared:extensions/javascriptstep/javascriptstep-shared.jar"
-            "com.mirth.connect.plugins.datatypes:datatype-raw-shared:extensions/datatype-raw/datatype-raw-shared.jar"
-            "com.mirth.connect.plugins.datatypes:datatype-hl7v2-shared:extensions/datatype-hl7v2/datatype-hl7v2-shared.jar"
-          )
-          for entry in "${JARS[@]}"; do
-            IFS=':' read -r group artifact rel <<< "$entry"
-            jar="$GITHUB_WORKSPACE/oie/$rel"
-            test -f "$jar" || { echo "::error::missing engine jar $rel in the OIE distribution"; exit 1; }
-            mvn -B -ntp install:install-file -Dfile="$jar" -DgroupId="$group" \
-              -DartifactId="$artifact" -Dversion="$MC_VERSION" -Dpackaging=jar
-          done
+          OIE_DIST_CACHE: ${{ github.workspace }}/.oie-dist
+        run: ./scripts/install-engine-jars.sh
 
-      - name: Stamp version (webadmin manifest)
+      # Signing is skipped by default (no keystore in CI).
+      - name: Build and test
+        run: mvn -B -ntp package
+
+      - name: Confirm tests actually ran
+        run: |
+          reports=$(find . -path '*/target/surefire-reports/*.xml' | wc -l)
+          if [ "$reports" -eq 0 ]; then
+            echo "::error::No surefire reports were produced. The test suite did not run."
+            exit 1
+          fi
+          echo "surefire report files: $reports"
+
+      # plugin.xml and webadmin/plugin.json get their version from the pom when the zip is
+      # built. Check what actually went into the zip, so a broken filter can't ship a placeholder.
+      - name: Check the version inside the zip
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
-          jq --arg v "$VERSION" '.version = $v' webadmin/plugin.json > webadmin/plugin.json.tmp && mv webadmin/plugin.json.tmp webadmin/plugin.json
+          ZIP="package/target/simple-channel-history-${VERSION}.zip"
+          XML="$(unzip -p "$ZIP" simple-channel-history/plugin.xml | sed -n 's:.*<pluginVersion>\(.*\)</pluginVersion>.*:\1:p')"
+          JSON="$(unzip -p "$ZIP" simple-channel-history/webadmin/plugin.json | jq -r .version)"
+          if [ "$XML" != "$VERSION" ] || [ "$JSON" != "$VERSION" ]; then
+            echo "::error::The zip has plugin.xml '${XML}' and webadmin/plugin.json '${JSON}', but the tag is ${VERSION}."
+            exit 1
+          fi
+          echo "plugin.xml and webadmin/plugin.json in the zip both say ${VERSION}"
 
-      - name: Build extension
-        # -Drevision drives ${project.version}: plugin.xml pluginVersion, the library
-        # jar names, and the zip name (simple-channel-history-<version>.zip). Signing
-        # is skipped by default (no keystore in CI).
-        run: mvn -B -ntp -DskipTests -Drevision="${{ steps.ver.outputs.version }}" package
+      # Nothing else loads the CLIENT libraries plugin.xml names; only the Swing Administrator does.
+      - name: Check the zip has every library plugin.xml names
+        run: bash scripts/check-zip-libraries.sh "package/target/simple-channel-history-${{ steps.ver.outputs.version }}.zip"
 
       - name: Stage the release asset and checksum
         id: pkg
         run: |
           VERSION="${{ steps.ver.outputs.version }}"
-          SRC="$(find package/target -maxdepth 1 -name 'simple-channel-history-*.zip' | head -n1)"
-          if [ -z "$SRC" ]; then
-            echo "::error::No simple-channel-history zip found in package/target/"; ls -l package/target || true; exit 1
-          fi
           ASSET="simple-channel-history-${VERSION}.zip"
+          SRC="package/target/${ASSET}"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::${SRC} was not built"; ls -l package/target || true; exit 1
+          fi
           mkdir -p out
           cp "$SRC" "out/${ASSET}"
           ( cd out && sha256sum "${ASSET}" > "${ASSET}.sha256" )
           echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
 
-      - name: Create DRAFT GitHub Release with assets
+      - name: Upload the release asset and checksum for the release job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-zip
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write    # create or update the draft release
+      actions: read      # download the build job's artifact
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ASSET: ${{ needs.build.outputs.asset }}
+    steps:
+      - name: Download the release asset and checksum
+        run: |
+          gh run download "$GITHUB_RUN_ID" --name release-zip --dir out
+          ( cd out && sha256sum -c "${ASSET}.sha256" )
+
+      - name: Create or update the DRAFT release
         # Stays a draft: the zip is unsigned. A human signs locally, replaces the
         # zip and its .sha256 sidecar, and publishes (see RELEASING.md).
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          files: |
-            out/${{ steps.pkg.outputs.asset }}
-            out/${{ steps.pkg.outputs.asset }}.sha256
-          prerelease: ${{ contains(github.ref_name, '-') }}
+        run: |
+          if DRAFT="$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft 2>&1)"; then
+            if [ "$DRAFT" != "true" ]; then
+              echo "::error::Release ${GITHUB_REF_NAME} is already published. Its files are never replaced; release a new version."
+              exit 1
+            fi
+            echo "A draft exists for ${GITHUB_REF_NAME}; replacing its files."
+            gh release upload "$GITHUB_REF_NAME" "out/${ASSET}" "out/${ASSET}.sha256" --clobber
+          elif [ "$DRAFT" = "release not found" ]; then
+            prerelease=()
+            case "$GITHUB_REF_NAME" in *-*) prerelease=(--prerelease) ;; esac
+            gh release create "$GITHUB_REF_NAME" "out/${ASSET}" "out/${ASSET}.sha256" \
+              --draft --verify-tag --title "$GITHUB_REF_NAME" --notes "" "${prerelease[@]}"
+          else
+            # Anything else (network, permissions) must not be taken for "no release".
+            echo "::error::Could not check for an existing release: $DRAFT"
+            exit 1
+          fi

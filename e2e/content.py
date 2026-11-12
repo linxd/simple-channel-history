@@ -9,6 +9,7 @@ Administrators do. That endpoint deletes every library the request leaves out, s
 here sends the engine's full current library list.
 """
 
+import json
 import os
 import uuid
 import xml.etree.ElementTree as ET
@@ -17,7 +18,7 @@ from oie import ApiError
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-CHANNEL_FIXTURE = os.path.join(REPO, "shared", "src", "main", "resources", "channel-for-diffing-version1.xml")
+CHANNEL_FIXTURE = os.path.join(REPO, "client", "src", "test", "resources", "channel-for-diffing-version1.xml")
 TEMPLATE_FIXTURE = os.path.join(HERE, "fixtures", "code-template.xml")
 EXT = "/extensions/simple-channel-history"
 PLUGIN_PATH = "simple-channel-history"
@@ -63,12 +64,54 @@ def _rows(root):
 
 # ---------- channels
 
-def channel_xml(cid, name, description):
+def channel_xml(cid, name, description, settings=None):
+    """The channel fixture. settings, when given, is sent the way the channel editor sends it, in
+    exportData: {"enabled": bool, "prune_days": (metadata, content) or None, "tags": [(tag id, name)]}."""
     root = ET.parse(CHANNEL_FIXTURE).getroot()
     _set(root, "id", cid)
     _set(root, "name", name)
     _set(root, "description", description)
+    if settings is not None:
+        export = root.find("exportData")
+        metadata = export.find("metadata")
+        _set(metadata, "enabled", "true" if settings["enabled"] else "false")
+        old = metadata.find("pruningSettings")
+        if old is not None:
+            metadata.remove(old)
+        if settings["prune_days"] is not None:          # None: no pruning settings at all
+            pruning = ET.SubElement(metadata, "pruningSettings")
+            for tag, value in (("pruneMetaDataDays", settings["prune_days"][0]), ("pruneContentDays", settings["prune_days"][1]),
+                               ("archiveEnabled", "false"), ("pruneErroredMessages", "false")):
+                ET.SubElement(pruning, tag).text = str(value)
+        old = export.find("channelTags")
+        if old is not None:
+            export.remove(old)
+        tags = ET.SubElement(export, "channelTags")
+        for tag_id, tag_name in settings["tags"]:
+            tag = ET.SubElement(tags, "channelTag")
+            ET.SubElement(tag, "id").text = tag_id
+            ET.SubElement(tag, "name").text = tag_name
+            ET.SubElement(ET.SubElement(tag, "channelIds"), "string").text = cid
+            color = ET.SubElement(tag, "backgroundColor")
+            for part, value in (("red", 40), ("green", 120), ("blue", 200), ("alpha", 255)):
+                ET.SubElement(color, part).text = str(value)
     return _xml(root)
+
+
+def channel_settings(api, cid):
+    """The channel's settings and tags as the engine holds them:
+    (enabled, (metadata days, content days, archive enabled, prune errored) or None, [tag names])."""
+    enabled, prune = None, None
+    for entry in api.xml("GET", "/server/channelMetadata"):
+        if entry.findtext("string") == cid:
+            metadata = [child for child in entry if child.tag != "string"][0]
+            pruning = metadata.find("pruningSettings")
+            enabled = metadata.findtext("enabled")
+            prune = (tuple(pruning.findtext(f) for f in ("pruneMetaDataDays", "pruneContentDays", "archiveEnabled",
+                                                          "pruneErroredMessages")) if pruning is not None else None)
+    tags = sorted(tag.findtext("name") for tag in api.xml("GET", "/server/channelTags")
+                  if cid in [s.text for s in tag.iter("string")])
+    return enabled, prune, tags
 
 
 def _boolean_json(status, text):
@@ -76,13 +119,13 @@ def _boolean_json(status, text):
     return status == 200 and text.replace(" ", "") == '{"boolean":true}'
 
 
-def create_channel(api, cid, name, description):
-    return _boolean_json(*api.request("POST", "/channels", channel_xml(cid, name, description),
+def create_channel(api, cid, name, description, settings=None):
+    return _boolean_json(*api.request("POST", "/channels", channel_xml(cid, name, description, settings),
                                       accept="application/json"))
 
 
-def update_channel(api, cid, name, description):
-    return _boolean_json(*api.request("PUT", f"/channels/{cid}", channel_xml(cid, name, description),
+def update_channel(api, cid, name, description, settings=None):
+    return _boolean_json(*api.request("PUT", f"/channels/{cid}", channel_xml(cid, name, description, settings),
                                       accept="application/json", query={"override": "true"}))
 
 
@@ -226,6 +269,12 @@ def history_ids(api, kind, item_id):
     return [row["hash"] for row in history(api, kind, item_id)]
 
 
+def history_status(api, kind, item_id):
+    """The history list's HTTP status, without raising on an error."""
+    path, key = (("/history", "channelId") if kind == "channel" else ("/codeTemplateHistory", "codeTemplateId"))
+    return api.request("GET", EXT + path, query={key: item_id})[0]
+
+
 def content(api, kind, item_id, history_id):
     path, key = (("/content", "channelId") if kind == "channel" else ("/codeTemplateContent", "codeTemplateId"))
     status, text = api.text(EXT + path, query={key: item_id, "revision": history_id})
@@ -260,6 +309,100 @@ def deleted_content(api, kind, row_id):
 def purge(api, kind, row_id):
     path = "/purgeDeletedChannel" if kind == "channel" else "/purgeDeletedCodeTemplate"
     return _value(api.xml("POST", EXT + path, query={"id": row_id})) == "true"
+
+
+def json_list(api, path, query=None):
+    """One of the plugin's list endpoints as JSON, the way the web administrator reads it.
+    Returns (HTTP status, the parsed body or None)."""
+    status, text = api.request("GET", EXT + path, accept="application/json", query=query)
+    return status, (json.loads(text) if status == 200 and text.strip() else None)
+
+
+def revert_status(api, kind, item_id, history_id):
+    """Revert without raising on an error status. Returns (HTTP status, body)."""
+    path, key = (("/revertChannel", "channelId") if kind == "channel" else ("/revertCodeTemplate", "codeTemplateId"))
+    return api.request("POST", EXT + path, query={key: item_id, "revision": history_id})
+
+
+def prune_status(api, kind, item_id, keep_from_history_id):
+    """Prune without raising on an error status. Returns (HTTP status, body)."""
+    path, key = (("/pruneChannelHistory", "channelId") if kind == "channel"
+                 else ("/pruneCodeTemplateHistory", "codeTemplateId"))
+    return api.request("POST", EXT + path, query={key: item_id, "revision": keep_from_history_id})
+
+
+def deleted_status(api, kind):
+    """The Deleted Items list without raising on an error status. Returns (HTTP status, rows or None)."""
+    status, text = api.request("GET", EXT + ("/deletedChannels" if kind == "channel" else "/deletedCodeTemplates"))
+    return status, (_rows(ET.fromstring(text)) if status == 200 and text.strip() else None)
+
+
+def deleted_content_status(api, kind, row_id):
+    path = "/deletedChannelContent" if kind == "channel" else "/deletedCodeTemplateContent"
+    return api.text(EXT + path, query={"id": row_id})
+
+
+def purge_status(api, kind, row_id):
+    path = "/purgeDeletedChannel" if kind == "channel" else "/purgeDeletedCodeTemplate"
+    return api.request("POST", EXT + path, query={"id": row_id})
+
+
+def plugin_events(api, limit=100):
+    """The plugin's own entries in the engine's event log, newest first: each one's attributes plus
+    'userId' and 'ipAddress'."""
+    events = []
+    for event in api.xml("GET", "/events", query={"limit": limit}):
+        if event.findtext("name") != "Simple Channel History":
+            continue
+        fields = {entry[0].text: entry[1].text for entry in event.iter("entry")}
+        fields.update(id=int(event.findtext("id")), userId=event.findtext("userId"), ipAddress=event.findtext("ipAddress"))
+        events.append(fields)
+    return sorted(events, key=lambda e: e["id"], reverse=True)
+
+
+# ---------- users and rbac roles
+
+def current_user_id(api):
+    return api.xml("GET", "/users/current").findtext("id")
+
+
+def create_user(api, username, password):
+    """Creates an engine user and sets its password. Returns the user's id."""
+    user = ET.Element("user")
+    for tag, text in (("username", username), ("firstName", "SCH"), ("lastName", "e2e"),
+                      ("email", f"{username}@example.com")):
+        ET.SubElement(user, tag).text = text
+    api.xml("POST", "/users", _xml(user))
+    uid = api.xml("GET", f"/users/{username}").findtext("id")
+    status, text = api.request("PUT", f"/users/{uid}/password", password, content_type="text/plain")
+    if status not in (200, 204) or "<string>" in text:   # a list of strings is the password rules it broke
+        raise ApiError(f"PUT /users/{uid}/password -> HTTP {status}: {text[:300]}")
+    return uid
+
+
+RBAC = "/extensions/rbac"
+
+
+def rbac_answers(api):
+    """rbac is installed and running: its role list answers."""
+    return api.request("GET", RBAC + "/roles")[0] == 200
+
+
+def create_role(api, name, permissions, channel_ids=()):
+    """An rbac role. An empty channel_ids leaves the role unrestricted by channel. Returns the role's id."""
+    role = ET.Element("com.diridium.rbac.Role")
+    ET.SubElement(role, "name").text = name
+    ET.SubElement(role, "description").text = "simple-channel-history e2e"
+    for tag, values in (("permissions", permissions), ("channelIds", channel_ids)):
+        holder = ET.SubElement(role, tag)
+        for value in values:
+            ET.SubElement(holder, "string").text = value
+    ET.SubElement(role, "isAdmin").text = "false"
+    return api.xml("POST", RBAC + "/roles", _xml(role)).findtext("id")
+
+
+def assign_role(api, user_id, role_id):
+    api.xml("POST", f"{RBAC}/users/{user_id}/role/{role_id}")
 
 
 # ---------- extensions

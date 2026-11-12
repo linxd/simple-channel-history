@@ -12,7 +12,6 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.text.SimpleDateFormat;
-import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 
@@ -32,12 +31,8 @@ import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.SwingUtilities;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.mirth.connect.client.ui.Frame;
 import com.mirth.connect.client.ui.PlatformUI;
-import com.mirth.connect.model.converters.ObjectXMLSerializer;
 
 /**
  * Dialog for viewing code template version history.
@@ -45,7 +40,6 @@ import com.mirth.connect.model.converters.ObjectXMLSerializer;
  * @author Kiran Ayyagari (kayyagari@apache.org)
  */
 public class CodeTemplateHistoryDialog extends JDialog {
-    private static final Logger log = LoggerFactory.getLogger(CodeTemplateHistoryDialog.class);
 
     private final String codeTemplateId;
     private final String codeTemplateName;
@@ -53,18 +47,23 @@ public class CodeTemplateHistoryDialog extends JDialog {
     private ChannelHistoryServletInterface servlet;
     private JButton btnShowDiff;
     private JButton btnRevert;
+    // Actions the user's role can't use are hidden rather than refused after a confirmation.
+    private final boolean canRevert = RoleAccess.allows(ChannelHistoryTasks.REVERT_CODE_TEMPLATE);
+    private final boolean canPrune = RoleAccess.allows(ChannelHistoryTasks.PRUNE_CODE_TEMPLATE_HISTORY);
 
     public CodeTemplateHistoryDialog(JFrame parent, String codeTemplateId, String codeTemplateName) {
         super(parent, "Version History - " + codeTemplateName, true);
         this.codeTemplateId = codeTemplateId;
         this.codeTemplateName = codeTemplateName;
-        ObjectXMLSerializer.getInstance().allowTypes(Collections.emptyList(), Collections.singletonList(RevisionInfo.class.getPackage().getName() + ".**"), Collections.emptyList());
+        AllowedTypes.register();
 
         initComponents();
         loadHistory();
 
         setSize(700, 400);
         setLocationRelativeTo(parent);
+        // The title-bar close disposes the dialog too, as Close and Escape do.
+        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
 
         // Escape key closes dialog
         getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
@@ -120,7 +119,7 @@ public class CodeTemplateHistoryDialog extends JDialog {
             }
 
             private void handlePopup(MouseEvent e) {
-                if (e.isPopupTrigger()) {
+                if (e.isPopupTrigger() && canPrune) {
                     int row = tblRevisions.rowAtPoint(e.getPoint());
                     if (row >= 0 && !tblRevisions.isRowSelected(row)) {
                         tblRevisions.setRowSelectionInterval(row, row);
@@ -145,8 +144,8 @@ public class CodeTemplateHistoryDialog extends JDialog {
         JLabel helpLabel = new JLabel(new ImageIcon(Frame.class.getResource("images/help.png")));
         String helpText = "<html>" +
                 "<b>Double-click</b> a revision to compare with previous<br>" +
-                "<b>Ctrl/Cmd-click</b> to select two revisions, then Show Diff<br>" +
-                "<b>Right-click</b> for prune option" +
+                "<b>Ctrl/Cmd-click</b> to select two revisions, then Show Diff" +
+                (canPrune ? "<br><b>Right-click</b> for prune option" : "") +
                 "</html>";
         helpLabel.setToolTipText(helpText);
         helpLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -174,6 +173,7 @@ public class CodeTemplateHistoryDialog extends JDialog {
         btnRevert = new JButton("Revert to Selected");
         btnRevert.setEnabled(false);
         btnRevert.addActionListener(e -> revertToSelected());
+        btnRevert.setVisible(canRevert);
         buttonPanel.add(btnRevert);
 
         JButton btnClose = new JButton("Close");
@@ -205,7 +205,7 @@ public class CodeTemplateHistoryDialog extends JDialog {
                 toFront();
                 requestFocus();
             } catch (Exception e) {
-                PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+                RoleAccess.alertFailure(this, e, "You don't have permission to view this code template's history.");
             }
         });
     }
@@ -231,10 +231,9 @@ public class CodeTemplateHistoryDialog extends JDialog {
             String rightLabel = String.format("New - %s (user: %s, time: %s)", newer.getShortHash(), newer.getCommitterName(), sdf.format(new Date(newer.getTime())));
 
             DiffWindow dw = DiffWindow.create(this, "Code Template Diff - " + codeTemplateName, leftLabel, rightLabel, left, right);
-            dw.setSize(PlatformUI.MIRTH_FRAME.getWidth() - 10, PlatformUI.MIRTH_FRAME.getHeight() - 10);
-            dw.setVisible(true);
+            DiffWindow.showOverAdministrator(dw);
         } catch (Exception e) {
-            PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+            RoleAccess.alertFailure(this, e, "You don't have permission to view this code template's history.");
         }
     }
 
@@ -286,7 +285,7 @@ public class CodeTemplateHistoryDialog extends JDialog {
                 loadHistory();
             }
         } catch (Exception e) {
-            PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+            RoleAccess.alertFailure(this, e, "You don't have permission to revert this code template.");
         }
     }
 
@@ -321,7 +320,7 @@ public class CodeTemplateHistoryDialog extends JDialog {
             PlatformUI.MIRTH_FRAME.alertInformation(this, "Deleted " + deleted + " older revision(s).");
             loadHistory();
         } catch (Exception e) {
-            PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+            RoleAccess.alertFailure(this, e, "You don't have permission to prune this code template's history.");
         }
     }
 }

@@ -13,31 +13,54 @@ const EXT = '/extensions/simple-channel-history';
 /* ---- REST client (the 14 servlet endpoints) -------------------------------- */
 
 export function makeApi(api) {
-    // Lists come back XStream-wrapped; asList unwraps { list: { <FQCN>: [...] } }.
-    const list = (v) => api.asList(v, 'com.diridium.RevisionInfo').length
-        ? api.asList(v, 'com.diridium.RevisionInfo') : api.asList(v, 'revisionInfo');
-    const dlist = (v) => api.asList(v, 'com.diridium.DeletedItemInfo').length
-        ? api.asList(v, 'com.diridium.DeletedItemInfo') : api.asList(v, 'deletedItemInfo');
+    // Prune and purge results go through the host's normal parsing, which unwraps the engine's
+    // {"int":2} and {"boolean":false} to plain values. Raw text would be the JSON itself.
+    // Lists come back XStream-wrapped; asList unwraps { list: { <FQCN>: [...] } }. The engine always
+    // uses the full class name.
+    const list = (v) => api.asList(v, 'com.diridium.RevisionInfo');
+    const dlist = (v) => api.asList(v, 'com.diridium.DeletedItemInfo');
     return {
         // Channels
         getHistory: async (channelId) => list(await api.get(`${EXT}/history`, { channelId })),
         getContent: (channelId, revision) => api.getXml(`${EXT}/content`, { channelId, revision }),
         revertChannel: (channelId, revision) => api.post(`${EXT}/revertChannel`, null, { params: { channelId, revision } }),
-        pruneChannelHistory: (channelId, revision) => api.post(`${EXT}/pruneChannelHistory`, null, { params: { channelId, revision }, raw: true }),
+        pruneChannelHistory: (channelId, revision) => api.post(`${EXT}/pruneChannelHistory`, null, { params: { channelId, revision } }),
         // Code templates
         getCodeTemplateHistory: async (codeTemplateId) => list(await api.get(`${EXT}/codeTemplateHistory`, { codeTemplateId })),
         getCodeTemplateContent: (codeTemplateId, revision) => api.getXml(`${EXT}/codeTemplateContent`, { codeTemplateId, revision }),
         revertCodeTemplate: (codeTemplateId, revision) => api.post(`${EXT}/revertCodeTemplate`, null, { params: { codeTemplateId, revision } }),
-        pruneCodeTemplateHistory: (codeTemplateId, revision) => api.post(`${EXT}/pruneCodeTemplateHistory`, null, { params: { codeTemplateId, revision }, raw: true }),
+        pruneCodeTemplateHistory: (codeTemplateId, revision) => api.post(`${EXT}/pruneCodeTemplateHistory`, null, { params: { codeTemplateId, revision } }),
         // Deleted channels
         getDeletedChannels: async () => dlist(await api.get(`${EXT}/deletedChannels`)),
         getDeletedChannelContent: (id) => api.getXml(`${EXT}/deletedChannelContent`, { id }),
-        purgeDeletedChannel: (id) => api.post(`${EXT}/purgeDeletedChannel`, null, { params: { id }, raw: true }),
+        purgeDeletedChannel: (id) => api.post(`${EXT}/purgeDeletedChannel`, null, { params: { id } }),
         // Deleted code templates
         getDeletedCodeTemplates: async () => dlist(await api.get(`${EXT}/deletedCodeTemplates`)),
         getDeletedCodeTemplateContent: (id) => api.getXml(`${EXT}/deletedCodeTemplateContent`, { id }),
-        purgeDeletedCodeTemplate: (id) => api.post(`${EXT}/purgeDeletedCodeTemplate`, null, { params: { id }, raw: true })
+        purgeDeletedCodeTemplate: (id) => api.post(`${EXT}/purgeDeletedCodeTemplate`, null, { params: { id } })
     };
+}
+
+/* ---- what the user's role allows (ChannelHistoryTasks, 1:1) ---------------- */
+
+// The plugin's task names, which the server registers with the engine permissions they need. With
+// Role-Based Access Control the host's checkTask resolves them, so the UI hides actions the server
+// would refuse. Without it every task is allowed. The server checks the permissions either way.
+export const TASK_GROUP = 'Simple Channel History';
+export const TASKS = {
+    REVERT_CHANNEL: 'doRevertChannel',
+    PRUNE_CHANNEL_HISTORY: 'doPruneChannelHistory',
+    VIEW_DELETED_CHANNELS: 'doViewDeletedChannels',
+    REVERT_CODE_TEMPLATE: 'doRevertCodeTemplate',
+    PRUNE_CODE_TEMPLATE_HISTORY: 'doPruneCodeTemplateHistory',
+    VIEW_DELETED_CODE_TEMPLATES: 'doViewDeletedCodeTemplates'
+};
+// The Deleted Items tab. The host names its task group after it, settings_<tab>.
+export const DELETED_ITEMS_TAB = 'Channel History: Deleted Items';
+
+export function allows(platform, task) {
+    if (typeof platform.checkTask !== 'function') return true;
+    return platform.checkTask(TASK_GROUP, task) !== false;
 }
 
 /* ---- time formatting (RevisionInfoTableModel.formatTime, 1:1) -------------- */
@@ -107,11 +130,11 @@ function prettyNode(el, indent = '') {
     return `${indent}<${el.tagName}${attrs}>\n${inner}\n${indent}</${el.tagName}>`;
 }
 
-function put(components, key, displayName, content, category, parentGroup) {
-    components.set(key, { key, displayName, content, category, parentGroup });
+function put(components, key, displayName, content, parentGroup) {
+    components.set(key, { key, displayName, content, parentGroup });
 }
 
-function extractSteps(components, connectorEl, connectorGroup, elementName, displayName, category) {
+function extractSteps(components, connectorEl, connectorGroup, elementName, displayName) {
     const sub = directChild(connectorEl, elementName);
     if (!sub) return;
     const elements = directChild(sub, 'elements');
@@ -124,7 +147,7 @@ function extractSteps(components, connectorEl, connectorGroup, elementName, disp
         const seq = seqText != null ? seqText : String(i);
         let name = directChildText(step, 'name');
         if (!name) name = stepTypeName(step.tagName);
-        put(components, `${subGroupKey}/Step ${seq}`, `Step ${seq}: ${name}`, prettyNode(step), category, subGroupKey);
+        put(components, `${subGroupKey}/Step ${seq}`, `Step ${seq}: ${name}`, prettyNode(step), subGroupKey);
         elements.removeChild(step);
     });
 }
@@ -133,19 +156,19 @@ function extractConnector(components, connectorEl, group) {
     const props = directChild(connectorEl, 'properties');
     if (props) {
         const script = directChild(props, 'script');
-        if (script) { put(components, `${group}/Script`, 'Script', script.textContent, 'CONNECTOR_SCRIPT', group); props.removeChild(script); }
+        if (script) { put(components, `${group}/Script`, 'Script', script.textContent, group); props.removeChild(script); }
         const pluginProps = directChild(props, 'pluginProperties');
         if (pluginProps) {
             for (const plugin of directChildren(pluginProps)) {
                 const pname = stepTypeName(plugin.tagName);
-                put(components, `${group}/Plugin: ${pname}`, `Plugin: ${pname}`, prettyNode(plugin), 'CONNECTOR_PLUGIN', group);
+                put(components, `${group}/Plugin: ${pname}`, `Plugin: ${pname}`, prettyNode(plugin), group);
             }
             for (const plugin of directChildren(pluginProps)) pluginProps.removeChild(plugin);
         }
     }
-    extractSteps(components, connectorEl, group, 'filter', 'Filter', 'FILTER');
-    extractSteps(components, connectorEl, group, 'transformer', 'Transformer', 'TRANSFORMER');
-    extractSteps(components, connectorEl, group, 'responseTransformer', 'Response Transformer', 'RESPONSE_TRANSFORMER');
+    extractSteps(components, connectorEl, group, 'filter', 'Filter');
+    extractSteps(components, connectorEl, group, 'transformer', 'Transformer');
+    extractSteps(components, connectorEl, group, 'responseTransformer', 'Response Transformer');
 }
 
 /* Returns { components: Map<key, comp>, groupDisplayNames: Map<group,name> } or
@@ -161,14 +184,14 @@ export function decomposeChannel(channelXml) {
     for (const [tag, name] of [['preprocessingScript', 'Preprocessing Script'], ['postprocessingScript', 'Postprocessing Script'],
         ['deployScript', 'Deploy Script'], ['undeployScript', 'Undeploy Script']]) {
         const node = directChild(root, tag);
-        if (node) { put(components, `Channel Scripts/${name}`, name, node.textContent, 'CHANNEL_SCRIPT', 'Channel Scripts'); root.removeChild(node); }
+        if (node) { put(components, `Channel Scripts/${name}`, name, node.textContent, 'Channel Scripts'); root.removeChild(node); }
     }
 
     // Source connector
     const source = directChild(root, 'sourceConnector');
     if (source) {
         extractConnector(components, source, 'Source Connector');
-        put(components, 'Source Connector/Configuration', 'Configuration', prettyNode(source), 'CONNECTOR_CONFIGURATION', 'Source Connector');
+        put(components, 'Source Connector/Configuration', 'Configuration', prettyNode(source), 'Source Connector');
         root.removeChild(source);
     }
 
@@ -188,15 +211,15 @@ export function decomposeChannel(channelXml) {
         for (const connector of connectors) {
             const metaDataId = directChildText(connector, 'metaDataId');
             const group = `Destination [${metaDataId}]`;
-            put(components, `${group}/Configuration`, 'Configuration', prettyNode(connector), 'CONNECTOR_CONFIGURATION', group);
+            put(components, `${group}/Configuration`, 'Configuration', prettyNode(connector), group);
         }
         root.removeChild(destWrapper);
     }
 
     // Channel Properties = the remainder; ordered first, then Destination Order, then the rest.
     const ordered = new Map();
-    put(ordered, 'Channel Properties', 'Channel Properties', prettyNode(root), 'CHANNEL_PROPERTIES', 'Channel Properties');
-    if (destOrder.length) put(ordered, 'Destination Order', 'Destination Order', destOrder.join('\n'), 'CHANNEL_PROPERTIES', 'Destination Order');
+    put(ordered, 'Channel Properties', 'Channel Properties', prettyNode(root), 'Channel Properties');
+    if (destOrder.length) put(ordered, 'Destination Order', 'Destination Order', destOrder.join('\n'), 'Destination Order');
     for (const [k, v] of components) ordered.set(k, v);
     return { components: ordered, groupDisplayNames };
 }

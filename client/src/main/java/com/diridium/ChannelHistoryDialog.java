@@ -12,7 +12,6 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.text.SimpleDateFormat;
-import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 
@@ -37,7 +36,6 @@ import org.slf4j.LoggerFactory;
 
 import com.mirth.connect.client.ui.Frame;
 import com.mirth.connect.client.ui.PlatformUI;
-import com.mirth.connect.model.converters.ObjectXMLSerializer;
 
 /**
  * Dialog for viewing channel version history.
@@ -53,18 +51,23 @@ public class ChannelHistoryDialog extends JDialog {
     private ChannelHistoryServletInterface servlet;
     private JButton btnShowDiff;
     private JButton btnRevert;
+    // Actions the user's role can't use are hidden rather than refused after a confirmation.
+    private final boolean canRevert = RoleAccess.allows(ChannelHistoryTasks.REVERT_CHANNEL);
+    private final boolean canPrune = RoleAccess.allows(ChannelHistoryTasks.PRUNE_CHANNEL_HISTORY);
 
     public ChannelHistoryDialog(JFrame parent, String channelId, String channelName) {
         super(parent, "Version History - " + channelName, true);
         this.channelId = channelId;
         this.channelName = channelName;
-        ObjectXMLSerializer.getInstance().allowTypes(Collections.emptyList(), Collections.singletonList(RevisionInfo.class.getPackage().getName() + ".**"), Collections.emptyList());
+        AllowedTypes.register();
 
         initComponents();
         loadHistory();
 
         setSize(700, 400);
         setLocationRelativeTo(parent);
+        // The title-bar close disposes the dialog too, as Close and Escape do.
+        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
 
         // Escape key closes dialog
         getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
@@ -120,7 +123,7 @@ public class ChannelHistoryDialog extends JDialog {
             }
 
             private void handlePopup(MouseEvent e) {
-                if (e.isPopupTrigger()) {
+                if (e.isPopupTrigger() && canPrune) {
                     int row = tblRevisions.rowAtPoint(e.getPoint());
                     if (row >= 0 && !tblRevisions.isRowSelected(row)) {
                         tblRevisions.setRowSelectionInterval(row, row);
@@ -145,8 +148,8 @@ public class ChannelHistoryDialog extends JDialog {
         JLabel helpLabel = new JLabel(new ImageIcon(Frame.class.getResource("images/help.png")));
         String helpText = "<html>" +
                 "<b>Double-click</b> a revision to compare with previous<br>" +
-                "<b>Ctrl/Cmd-click</b> to select two revisions, then Show Diff<br>" +
-                "<b>Right-click</b> for prune option" +
+                "<b>Ctrl/Cmd-click</b> to select two revisions, then Show Diff" +
+                (canPrune ? "<br><b>Right-click</b> for prune option" : "") +
                 "</html>";
         helpLabel.setToolTipText(helpText);
         helpLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -174,6 +177,7 @@ public class ChannelHistoryDialog extends JDialog {
         btnRevert = new JButton("Revert to Selected");
         btnRevert.setEnabled(false);
         btnRevert.addActionListener(e -> revertToSelected());
+        btnRevert.setVisible(canRevert);
         buttonPanel.add(btnRevert);
 
         JButton btnClose = new JButton("Close");
@@ -205,7 +209,7 @@ public class ChannelHistoryDialog extends JDialog {
                 toFront();
                 requestFocus();
             } catch (Exception e) {
-                PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+                RoleAccess.alertFailure(this, e, "You don't have permission to view this channel's history.");
             }
         });
     }
@@ -235,17 +239,15 @@ public class ChannelHistoryDialog extends JDialog {
                 ChannelXmlDecomposer.DecomposeResult rightResult = ChannelXmlDecomposer.decomposeWithNames(right);
                 DecomposedDiffWindow dw = DecomposedDiffWindow.create(this, "Channel Diff - " + channelName,
                         leftLabel, rightLabel, leftResult, rightResult, left, right);
-                dw.setSize(PlatformUI.MIRTH_FRAME.getWidth() - 10, PlatformUI.MIRTH_FRAME.getHeight() - 10);
-                dw.setVisible(true);
+                DiffWindow.showOverAdministrator(dw);
             } catch (Exception decompositionEx) {
                 // Fallback to original monolithic DiffWindow — log so failures aren't invisible
                 log.warn("Channel decomposition failed, falling back to raw diff: {}", decompositionEx.getMessage(), decompositionEx);
                 DiffWindow dw = DiffWindow.create(this, "Channel Diff - " + channelName, leftLabel, rightLabel, left, right);
-                dw.setSize(PlatformUI.MIRTH_FRAME.getWidth() - 10, PlatformUI.MIRTH_FRAME.getHeight() - 10);
-                dw.setVisible(true);
+                DiffWindow.showOverAdministrator(dw);
             }
         } catch (Exception e) {
-            PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+            RoleAccess.alertFailure(this, e, "You don't have permission to view this channel's history.");
         }
     }
 
@@ -278,8 +280,10 @@ public class ChannelHistoryDialog extends JDialog {
         RevisionInfo targetRevision = model.getRevisionAt(row);
 
         int confirm = JOptionPane.showConfirmDialog(this,
-                "Are you sure you want to revert to revision " + targetRevision.getShortHash() + "?\n" +
-                "This will overwrite the current channel.",
+                "Revert to revision " + targetRevision.getShortHash() + "?\n" +
+                "This restores the channel as saved in that revision: connectors, scripts, filters, transformers,\n" +
+                "and channel properties such as initial state and message storage.\n" +
+                "These stay as they are now: enabled or disabled, message pruning, and tags.",
                 "Confirm Revert",
                 JOptionPane.YES_NO_OPTION,
                 JOptionPane.WARNING_MESSAGE);
@@ -297,7 +301,7 @@ public class ChannelHistoryDialog extends JDialog {
                 loadHistory();
             }
         } catch (Exception e) {
-            PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+            RoleAccess.alertFailure(this, e, "You don't have permission to revert this channel.");
         }
     }
 
@@ -332,7 +336,7 @@ public class ChannelHistoryDialog extends JDialog {
             PlatformUI.MIRTH_FRAME.alertInformation(this, "Deleted " + deleted + " older revision(s).");
             loadHistory();
         } catch (Exception e) {
-            PlatformUI.MIRTH_FRAME.alertThrowable(PlatformUI.MIRTH_FRAME, e);
+            RoleAccess.alertFailure(this, e, "You don't have permission to prune this channel's history.");
         }
     }
 }
