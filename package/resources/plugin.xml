@@ -5,12 +5,12 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 
 <pluginMetaData path="simple-channel-history">
-    <name>Simple Channel History</name>
+    <name>通道历史记录</name>
     <author>Diridium Technologies Inc.</author>
     <pluginVersion>${project.version}</pluginVersion>
     <mirthVersion>${plugin.supported.mc.versions}</mirthVersion>
     <url>https://diridium.com</url>
-    <description>Plugin for tracking version history of Channels and CodeTemplates.</description>
+    <description>用于跟踪通道和代码模板版本历史的插件。</description>
 
     <serverClasses>
         <string>com.diridium.ChannelVersionController</string>
